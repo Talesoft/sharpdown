@@ -1,2 +1,3 @@
-Sharpdown/obj/*
-Sharpdown/bin/*
+/Sharpdown/obj/*
+/Sharpdown/bin/*
+/packages

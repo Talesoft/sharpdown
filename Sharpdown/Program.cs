@@ -15,6 +15,7 @@ namespace Sharpdown
 
         public static string ExecutablePath;
         public static string ProcessName;
+        public static bool WillShutdown;
 
         /// <summary>
         /// The main entry point for the application.
@@ -23,76 +24,114 @@ namespace Sharpdown
         static void Main(string[] args = null)
         {
 
-            Program.ExecutablePath = Process.GetCurrentProcess().MainModule.FileName;
-            Program.ProcessName = System.Diagnostics.Process.GetCurrentProcess().ProcessName + ".exe";
-            
-            if (!Settings.Default.Ie9StandardsModeSet) {
+            ExecutablePath = Process.GetCurrentProcess().MainModule.FileName;
+            ProcessName = System.Diagnostics.Process.GetCurrentProcess().ProcessName + ".exe";
+            WillShutdown = false;
 
-                if (RunAsAdministrator())
-                    return;
+            //Reset the settings while debugging.
+            if (Debugger.IsAttached)
+                Settings.Default.Reset();
 
-                if (!Settings.Default.Ie9StandardsModeSet)
-                    SetIe9KeyForWebBrowserControl();
+            CheckIe9StandardsModeForWebBrowserControl();
+
+            if (!WillShutdown) {
+
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new EditorForm(args));
             }
-
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new EditorForm(args));
         }
 
-
-
-        public static bool RunAsAdministrator()
+        public static void Shutdown()
         {
 
-            if (Program.IsAdministrator())
-                return false;
+            if (Application.OpenForms.Count > 0)
+                foreach (Form form in Application.OpenForms)
+                    form.Close();
 
-            DialogResult result = MessageBox.Show(
-                    "I need to set the Internet Explorer Mode to IE9 Standards mode in your registry or " +
-                    "you'll have script errors with the Syntax Highlighter.\n" +
-                    "Can I restart as Administrator once?",
-                    "Listen!",
-                    MessageBoxButtons.YesNo
-                );
+            Application.Exit();
+            WillShutdown = true;
+        }
 
-            if (result != DialogResult.Yes) {
+        public static void DisplayError(string message, bool fatal = false)
+        {
 
-                MessageBox.Show(
+            MessageBox.Show(message, "Oh noes!", MessageBoxButtons.OK, MessageBoxIcon.Error);
+
+            if (fatal)
+                Shutdown();
+        }
+
+        public static void DisplayInfo(string message)
+        {
+
+            MessageBox.Show(message, "Attention!", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        public static DialogResult DisplayYesNoQuestion(string question, string title = null)
+        {
+
+            return MessageBox.Show(question, title != null ? title : "Attention!", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        }
+
+        public static void CheckIe9StandardsModeForWebBrowserControl()
+        {
+
+            if (Settings.Default.IsIe9StandardsModeSet || !Settings.Default.CheckIfIe9StandardsModeIsSet)
+                return;
+
+            if (DisplayYesNoQuestion(
+                "I need to set the Internet Explorer Mode to IE9 Standards mode in your registry or " +
+                "you'll have script errors with the Syntax Highlighter.\n" +
+                "If you're not an administrator, I probably have to restart. Can I?") != DialogResult.Yes) {
+
+                DisplayInfo(
                     "Fine, but don't flame me for script errors!\n" +
-                    "You can always set the key again in the settings.\n",
-                    "Alright!"
+                    "You can always set the key again in the settings.\n"
                 );
-                Settings.Default.Ie9StandardsModeSet = true;
+                Settings.Default.CheckIfIe9StandardsModeIsSet = false;
                 Settings.Default.Save();
-                return false;
+                return;
             }
 
+            if (!IsAdministrator()) {
+
+                RunAsAdministrator();
+                return;
+            }
+
+            if (!Settings.Default.IsIe9StandardsModeSet)
+                SetIe9KeyForWebBrowserControl();
+        }
+
+        public static void RunAsAdministrator()
+        {
+
             // Restart program and run as admin
-            ProcessStartInfo startInfo = new ProcessStartInfo(Program.ExecutablePath);
+            ProcessStartInfo startInfo = new ProcessStartInfo(ExecutablePath);
             startInfo.Verb = "runas";
             Process.Start(startInfo);
-            Application.Exit();
-            return true;
+            WillShutdown = true;
+            Shutdown();
         }
 
         public static bool IsAdministrator()
         {
+
             WindowsIdentity identity = WindowsIdentity.GetCurrent();
             WindowsPrincipal principal = new WindowsPrincipal(identity);
+
             return principal.IsInRole(WindowsBuiltInRole.Administrator);
         }
 
         public static void ReportUnknownError()
         {
 
-            MessageBox.Show(
+            DisplayError(
                 "Failed to set your IE Mode to IE9 Standards mode.\nI don't even know what caused it, sorry. \n" +
                 "I'm useless.",
-                "Damn :("
+                true
             );
-            Application.Exit();
-            return;
         }
 
         //http://stackoverflow.com/questions/17922308/use-latest-version-of-ie-in-webbrowser-control
@@ -116,25 +155,19 @@ namespace Sharpdown
                     );
 
                 //If the path is not correct or 
-                //If user dont have priviledges to access registry 
-                if (key == null) {
+                //If user dont have priviledges to access registry
+                //Since we checked access before already, it's an unknown error of some kind.
+                if (key == null)
+                    ReportUnknownError();
 
-                    if (Program.IsAdministrator())
-                        Program.ReportUnknownError();
-                    else {
-
-                        Program.RunAsAdministrator();
-                    }
-                    return;
-                }
-
-                string appKey = Convert.ToString(key.GetValue(Program.ProcessName));
+                string appKey = Convert.ToString(key.GetValue(ProcessName));
 
                 //Check if key is already present 
                 if (appKey == "9000") {
-
-                    MessageBox.Show("I see it was set already, alright!", "Oh yeah!");
-                    Settings.Default.Ie9StandardsModeSet = true;
+                    
+                    //Just fucken silently continue and let the men (and women!) do their work.
+                    Settings.Default.IsIe9StandardsModeSet = true;
+                    Settings.Default.CheckIfIe9StandardsModeIsSet = false;
                     Settings.Default.Save();
 
                     key.Close();
@@ -143,26 +176,27 @@ namespace Sharpdown
 
                 //If key is not present add the key , Kev value 8000-Decimal 
                 if (string.IsNullOrEmpty(appKey))
-                    key.SetValue(Program.ProcessName, unchecked((int)0x2328), RegistryValueKind.DWord);
+                    key.SetValue(ProcessName, unchecked((int)0x2328), RegistryValueKind.DWord);
 
                 //check for the key after adding 
-                appKey = Convert.ToString(key.GetValue(Program.ProcessName));
+                appKey = Convert.ToString(key.GetValue(ProcessName));
 
                 if (appKey == "9000") {
 
-                    MessageBox.Show("Registry key successfully set. Have fun!", "Oh yeah!");
-                    Settings.Default.Ie9StandardsModeSet = true;
+                    DisplayInfo("Registry key successfully set. Have fun!");
+                    Settings.Default.IsIe9StandardsModeSet = true;
+                    Settings.Default.CheckIfIe9StandardsModeIsSet = false;
                     Settings.Default.Save();
                 } else {
 
-                    Program.ReportUnknownError();
+                    ReportUnknownError();
                     return;
                 }
 
 
             } catch (Exception ex) {
                 
-                MessageBox.Show(ex.Message, "Oh shit!");
+                DisplayError(ex.Message, true);
             } finally {
 
                 //Close the Registry 

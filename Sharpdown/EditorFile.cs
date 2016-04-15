@@ -1,12 +1,13 @@
 ﻿using Sharpdown.Properties;
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
-using ScintillaNET;
+using FastColoredTextBoxNS;
+using System.Reflection;
+using System.Diagnostics;
+using System.Drawing;
+using System.Text.RegularExpressions;
 
 namespace Sharpdown
 {
@@ -73,7 +74,7 @@ namespace Sharpdown
         public SplitContainer SplitContainer;
         public SplitterPanel Panel1;
         public SplitterPanel Panel2;
-        public Scintilla MarkdownEditor;
+        public FastColoredTextBox MarkdownEditor;
         public WebBrowser HtmlView;
 
         private DateTime LastHit;
@@ -145,15 +146,12 @@ namespace Sharpdown
             this.Panel1 = this.SplitContainer.Panel1;
             this.Panel2 = this.SplitContainer.Panel2;
 
-            this.MarkdownEditor = new Scintilla();
-            this.MarkdownEditor.Dock = DockStyle.Fill;
-            this.MarkdownEditor.Text = "";
-            this.MarkdownEditor.KeyUp += OnMarkdownChanged;
-            this.MarkdownEditor.ViewWhitespace = WhitespaceMode.VisibleOnlyIndent;
-            this.MarkdownEditor.UseTabs = false;
-            this.MarkdownEditor.TabWidth = 4;
-            this.MarkdownEditor.Click += OnClickSyncScrollbar;
-            this.Panel1.Controls.Add(this.MarkdownEditor);
+            CreateMarkdownEditor();
+            CreateHtmlView();
+        }
+
+        private void CreateHtmlView()
+        {
 
             this.HtmlView = new WebBrowser();
             this.HtmlView.DocumentText =
@@ -162,7 +160,7 @@ namespace Sharpdown
                     "<head>" +
                         "<meta charset=\"utf-8\">" +
                         "<title>Parsed Markdown Result HTML</title>" +
-                        "<style>body { margin: 0; }</style>" + 
+                        "<style>body { margin: 0; }</style>" +
                         "<style>" + Resources.DocumentStyle + "</style>" +
                         "<style>" + Resources.HighlightStyle + "</style>" +
                     "</head>" +
@@ -170,38 +168,98 @@ namespace Sharpdown
                         "<div id=\"markdown\"></div>" +
                         "<script>" + Resources.HightlightScript + "</script>" +
                         "<script>function highlight() { Prism.highlightAll(); }</script>" +
-                        "<script>function scroll(ratio) { " +
+                        "<script>function setScrollRatio(ratio) { " +
                             "document.documentElement.scrollTop = ratio * document.documentElement.scrollHeight;" +
                         "}</script>" +
                     "</body>" +
                 "</html>";
+            this.HtmlView.ScriptErrorsSuppressed = true;
+            this.HtmlView.DocumentCompleted += (object sender, WebBrowserDocumentCompletedEventArgs e) => {
 
+                this.HtmlView.Document.Window.Error += (object errorSender, HtmlElementErrorEventArgs errorEvent) => {
+
+                    errorEvent.Handled = true;
+
+                    if (Settings.Default.ShowHtmlViewScriptErrors)
+                        Program.DisplayError("A JavaScript error occured: \n\n" + errorEvent.Description);
+                };
+            };
             this.HtmlView.Dock = DockStyle.Fill;
             this.Panel2.Controls.Add(this.HtmlView);
         }
+        
 
-        private void OnClickSyncScrollbar(object sender, EventArgs e)
+        private void CreateMarkdownEditor()
         {
 
-            double ratio = (double)this.MarkdownEditor.CurrentLine / (double)this.MarkdownEditor.Lines.Count;
 
-            this.HtmlView.Document.InvokeScript("scroll", new object[] { ratio });
+            Style headerStyle = new TextStyle(Brushes.Navy, null, FontStyle.Bold);
+            Style emStyle = new TextStyle(Brushes.Gray, null, FontStyle.Italic);
+            Style strongStyle = new TextStyle(Brushes.Gray, null, FontStyle.Bold);
+            Style hrStyle = new TextStyle(Brushes.Orange, null, FontStyle.Bold);
+            Style linkStyle = new TextStyle(Brushes.Blue, null, FontStyle.Regular);
+            Style listStyle = new TextStyle(Brushes.LightGreen, null, FontStyle.Bold);
+            Style quoteStyle = new TextStyle(Brushes.DarkGreen, null, FontStyle.Italic);
+            Style codeStyle = new TextStyle(Brushes.Black, Brushes.LightGray, FontStyle.Regular);
+
+            this.MarkdownEditor = new FastColoredTextBox();
+            this.MarkdownEditor.Dock = DockStyle.Fill;
+            this.MarkdownEditor.Text = "";
+            this.MarkdownEditor.TextChangedDelayed += (object sender, TextChangedEventArgs e) => {
+
+                if ((DateTime.Now - this.LastHit).Milliseconds < Settings.Default.MarkdownParseDelayMilliseconds)
+                    return;
+
+                this.LastHit = DateTime.Now;
+                this.ParseMarkdown();
+                SyncScrollbars();
+            };
+            this.MarkdownEditor.TextChanged += (object sender, TextChangedEventArgs e) => {
+
+                e.ChangedRange.ClearStyle(headerStyle);
+                e.ChangedRange.SetStyle(headerStyle, @"^[#]+ .*$", RegexOptions.Multiline);
+
+                e.ChangedRange.ClearStyle(hrStyle);
+                e.ChangedRange.SetStyle(hrStyle, @"^[\-*]{3,}\s*$", RegexOptions.Multiline);
+                e.ChangedRange.SetStyle(listStyle, @"^- - -[\- ]*$", RegexOptions.Multiline);
+
+                e.ChangedRange.ClearStyle(listStyle);
+                e.ChangedRange.SetStyle(listStyle, @"^(?<range>[\-*])\s+[^\-].*$", RegexOptions.Multiline);
+
+                e.ChangedRange.ClearStyle(linkStyle);
+                e.ChangedRange.SetStyle(linkStyle, @"\[[^\]]*\]\([^\)]*\)");
+                e.ChangedRange.SetStyle(linkStyle, @"\[[^\]]*\]\[[^\]]*\]");
+                e.ChangedRange.SetStyle(linkStyle, @"<[^>]*>");
+                e.ChangedRange.SetStyle(linkStyle, @"^\[[^\]]*\]:.*$");
+
+                e.ChangedRange.ClearStyle(emStyle);
+                e.ChangedRange.SetStyle(emStyle, @"(^|[^*_])([*_])[^*_]+\2([^*_]|$)", RegexOptions.Multiline);
+
+                e.ChangedRange.ClearStyle(strongStyle);
+                e.ChangedRange.SetStyle(strongStyle, @"([*_]{2})[^*_]+\1", RegexOptions.Multiline);
+
+                e.ChangedRange.ClearStyle(quoteStyle);
+                e.ChangedRange.SetStyle(quoteStyle, @"^[>]+\s+.*$", RegexOptions.Multiline);
+
+                e.ChangedRange.ClearStyle(codeStyle);
+                e.ChangedRange.SetStyle(codeStyle, @"`[^`]*`");
+
+            };
+            this.MarkdownEditor.AutoCompleteBrackets = Settings.Default.MarkdownAutoCompletionEnabled;
+            this.MarkdownEditor.AutoIndent = true;
+            this.MarkdownEditor.SelectionChanged += (object sender, EventArgs e) => SyncScrollbars();
+            this.Panel1.Controls.Add(this.MarkdownEditor);
         }
 
-        private void OnMarkdownChanged(object sender, EventArgs e)
+        private void SyncScrollbars()
         {
 
-            if ((DateTime.Now - this.LastHit).Milliseconds < 50)
-                return;
+            FastColoredTextBox editor = this.MarkdownEditor;
+            var range = editor.Selection;
+            Trace.WriteLine(range.FromLine + " " + editor.LinesCount + " " + ((double)range.FromLine / (double)editor.LinesCount));
+            double ratio = ((double)range.FromLine / (double)editor.LinesCount);
 
-            this.LastHit = DateTime.Now;
-            this.ParseMarkdown();
-        }
-
-        public void CenterSplitter()
-        {
-
-            this.SplitContainer.SplitterDistance = (int)(this.SplitContainer.Height / 2);
+            this.HtmlView.Document.InvokeScript("setScrollRatio", new object[] { ratio });
         }
 
         private string GenerateTempFileName()
